@@ -1,42 +1,23 @@
 # Retrieval Autmented Generation (RAG) - basic implementation
 
+## Introduction
+
+A basic implementation of Retrieval Augmented Generation (RAG) in Python involves two main components: a retriever that fetches relevant documents from a knowledge base based on a query, and a generator that uses these retrieved documents as context to generate a response.
+
 Here we are going to implement a basic RAG with simple features.
 
-Here are the core components of the RAG:
+- Embeds documents and queries
+- Retrieves the top-k relevant documents
+- Summarize the text
 
-- MilvusRAG Class: Main class that handles all RAG operations
-- Embedding Generation: Uses SentenceTransformer to create vector embeddings
-- Document Storage: Stores documents with metadata (title, category, text)
-- Similarity Search: Retrieves most relevant documents based on query
-- Response Generation: Combines retrieved documents to answer queries
-- Command Line Interface for User Interaction
-- Natural Language Processing Chatbot with Intent recognition and context awareness
-
-Prerequisites
+## Setup
 
 ```bash
-pip install pymilvus sentence-transformers numpy
+pip install sumy
 ```
 
-Example queries
+## Running the app
 
-"What is machine learning?"
-"Tell me about databases"
-"How do neural networks work?"
-"Find information about Python"
-
-Example usage
-
-You: What is machine learning?
-🤖: Based on your question about 'what is machine learning', here's what I found:
-
-📄 Introduction to Machine Learning (Relevance: 0.95)
-📁 AI/ML
-
-Machine learning is a subset of artificial intelligence that enables computers to learn and improve from experience without being explicitly programmed...
-
-🔗 Related information:
-   • Deep Learning Fundamentals (AI/ML)
-   • Natural Language Processing (AI/ML)
-
-💡 Ask me more specific questions for detailed information!
+```bash
+python app.py
+```

@@ -1,70 +1,55 @@
-""" 
-Basic implementation of RAG (Retrieval Augmented Generation) using Flask
-"""
+import re
+from sumy.parsers.plaintext import PlaintextParser
+from sumy.nlp.tokenizers import Tokenizer
+from sumy.summarizers.lex_rank import LexRankSummarizer
 
-from flask import Flask, request, jsonify
-
-
-# Mock classes to simulate RAG components
-class SimpleRetriever:
-    def __init__(self, documents):
-        self.documents = documents
-
-    def retrieve(self, query, top_k=3):
-        # Simple keyword matching retrieval (replace with vector search in production)
-        results = [doc for doc in self.documents if query.lower() in doc.lower()]
-        return results[:top_k]
-
-
-class SimpleGenerator:
-    def generate(self, query, context_docs):
-        # Simple generation combining query and retrieved docs (replace with LLM call)
-        context = " ".join(context_docs)
-        return f"Answer based on query: '{query}' and context: '{context}'"
-
-
-class RAGPipeline:
-    def __init__(self, documents):
-        self.retriever = SimpleRetriever(documents)
-        self.generator = SimpleGenerator()
-
-    def query(self, question):
-        retrieved_docs = self.retriever.retrieve(question)
-        response = self.generator.generate(question, retrieved_docs)
-        return response
-
-
-# Sample documents to serve as knowledge base
-DOCUMENTS = [
+# Step 1: Prepare knowledge base
+documents = [
+    "The capital of France is Paris.",
     "Python is a popular programming language.",
-    "Flask is a lightweight web framework for Python.",
-    "Retrieval-Augmented Generation combines retrieval and generation.",
-    "Vector databases store embeddings for efficient search.",
-    "LangChain is a framework to build LLM applications.",
+    "The Eiffel Tower is located in Paris.",
+    "Machine learning is a subset of artificial intelligence.",
+    "RAG stands for Retrieval-Augmented Generation.",
 ]
 
-app = Flask(__name__)
-rag_pipeline = RAGPipeline(DOCUMENTS)
+
+# Step 2: Preprocess text (tokenization)
+def preprocess(text):
+    return re.findall(r"\w+", text.lower())
 
 
-@app.route("/query", methods=["POST"])
-def query():
-    data = request.get_json()
-    if not data or "query" not in data:
-        return jsonify({"error": "Missing 'query' parameter"}), 400
-
-    question = data["query"]
-    try:
-        answer = rag_pipeline.query(question)
-        return jsonify({"response": answer})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/")
-def health_check():
-    return "RAG Flask API is running."
+# Step 3: Keyword matching retrieval
+def keyword_match_retrieval(query, docs, top_k=2):
+    query_tokens = set(preprocess(query))
+    doc_scores = []
+    for i, doc in enumerate(docs):
+        doc_tokens = set(preprocess(doc))
+        score = len(query_tokens.intersection(doc_tokens))
+        doc_scores.append((score, i))
+    doc_scores.sort(key=lambda x: x[0], reverse=True)
+    top_docs = [docs[i] for score, i in doc_scores if score > 0][:top_k]
+    return top_docs
 
 
-if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5001)
+# Step 4: Summarization function using Sumy LexRank
+def summarize_text(text, sentences_count=2):
+    parser = PlaintextParser.from_string(text, Tokenizer("english"))
+    summarizer = LexRankSummarizer()
+    summary = summarizer(parser.document, sentences_count)
+    return " ".join(str(sentence) for sentence in summary)
+
+
+# Step 5: Query and retrieve
+query = "What is Paris?"
+retrieved_docs = keyword_match_retrieval(query, documents, top_k=3)
+
+# Step 6: Concatenate retrieved docs and summarize
+combined_text = " ".join(retrieved_docs)
+summary = summarize_text(combined_text, sentences_count=2)
+
+print("Query:", query)
+print("Retrieved documents:")
+for i, doc in enumerate(retrieved_docs, 1):
+    print(f"{i}. {doc}")
+print("\nSummary:")
+print(summary)

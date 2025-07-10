@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Healthcare Chatbot</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 2em auto;
+            max-width: 600px;
+        }
+
+        #chat-box {
+            border: 1px solid #ccc;
+            padding: 1em;
+            height: 400px;
+            overflow-y: auto;
+            background: #f9f9f9;
+            margin-bottom: 1em;
+            white-space: pre-wrap;
+        }
+
+        #user-input {
+            width: 100%;
+            height: 60px;
+            font-size: 1em;
+            padding: 0.5em;
+            box-sizing: border-box;
+        }
+
+        #send-btn {
+            padding: 0.5em 1em;
+            font-size: 1em;
+            margin-top: 0.5em;
+        }
+
+        .user-msg {
+            color: blue;
+            margin-bottom: 1em;
+        }
+
+        .bot-msg {
+            color: green;
+            margin-bottom: 1em;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Healthcare Chatbot</h1>
+    <div id="chat-box"></div>
+    <textarea id="user-input" placeholder="Type your message here..."></textarea><br />
+    <button id="send-btn">Send</button>
+
+    <script>
+        const chatBox = document.getElementById('chat-box');
+        const userInput = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+
+        // Keep chat history in memory (array of {role, content})
+        let chatHistory = [];
+
+        function appendMessage(sender, text) {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = sender === 'user' ? 'user-msg' : 'bot-msg';
+            msgDiv.textContent = (sender === 'user' ? 'You: ' : 'Assistant: ') + text;
+            chatBox.appendChild(msgDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const message = userInput.value.trim();
+            if (!message) return;
+
+            appendMessage('user', message);
+            chatHistory.push({ role: 'user', content: message });
+            userInput.value = '';
+            sendBtn.disabled = true;
+
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message, history: chatHistory })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    appendMessage('bot', data.response);
+                    chatHistory.push({ role: 'assistant', content: data.response });
+                } else {
+                    appendMessage('bot', 'Error: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                appendMessage('bot', 'Error communicating with server.');
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+
+        sendBtn.addEventListener('click', sendMessage);
+        userInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+    </script>
+
+</body>
+
+</html>

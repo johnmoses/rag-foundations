@@ -1,635 +1,466 @@
-from flask import Flask, request, jsonify, render_template_string
-import os
-from werkzeug.utils import secure_filename
+import json
+import threading
+import time
 import logging
-from datetime import datetime
-import uuid
-
-# Vector and embedding imports
-from pymilvus import (
-    connections,
-    Collection,
-    FieldSchema,
-    CollectionSchema,
-    DataType,
-    utility,
-)
-from sentence_transformers import SentenceTransformer
-import numpy as np
-
-# Document processing imports
-import PyPDF2
-from docx import Document as DocxDocument
-import chardet
-
-# LLM imports
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-import torch
-
-# Text processing
-import nltk
-from nltk.tokenize import sent_tokenize
 import re
 
-# Download required NLTK data
+from flask import Flask, request, jsonify, render_template
+import yfinance as yf
+from llama_cpp import Llama
+
+from bert_score import score as bert_score
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from nltk.tokenize import word_tokenize
+import nltk
+from sentence_transformers import SentenceTransformer
+from pymilvus import (
+    MilvusClient,
+    connections,
+    Collection,
+    CollectionSchema,
+    FieldSchema,
+    DataType,
+)
+
+# nltk.download("punkt")
+
+MILVUS_DB_URI = "milvus_rag_db.db"
+COLLECTION_NAME = "rag_collection"
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+
+milvus_client = MilvusClient(MILVUS_DB_URI)
+connections.connect(alias="default", uri=MILVUS_DB_URI)
+
+
+# --- Step 2: Create collection with primary key if not exists ---
+def create_collection():
+    if COLLECTION_NAME in milvus_client.list_collections():
+        return Collection(COLLECTION_NAME, using="default")
+
+    fields = [
+        FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
+        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=384),
+        FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535),
+    ]
+    schema = CollectionSchema(fields, description="RAG collection")
+    return Collection(name=COLLECTION_NAME, schema=schema, using="default")
+
+
+collection = create_collection()
+
+# --- Step 3: Prepare in-memory documents ---
+documents = [
+    "Milvus is an open-source vector database built for scalable similarity search.",
+    "It supports embedding-based search for images, video, and text.",
+    "You can use SentenceTransformers to generate embeddings for your documents.",
+    "GPT-2 is an open-source language model suitable for text generation tasks.",
+]
+
+# --- Step 4: Embed documents ---
+embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
+doc_embeddings = embedder.encode(documents, convert_to_numpy=True)
+
+
+# --- Step 5: Insert data programmatically ---
+def insert_data(collection, embeddings, texts):
+    entities = [
+        embeddings.tolist(),  # embeddings
+        texts,  # texts
+    ]
+    collection.insert(entities)
+    collection.flush()
+
+
+if collection.num_entities == 0:
+    insert_data(collection, doc_embeddings, documents)
+else:
+    print(
+        f"Collection already has {collection.num_entities} entities, skipping insert."
+    )
+
+# --- Step 5.1: Create index and load collection ---
+index_params = {
+    "metric_type": "IP",
+    "index_type": "IVF_FLAT",
+    "params": {"nlist": 128},
+}
+
 try:
-    nltk.download("punkt", quiet=True)
-except:
-    pass
+    print("Creating index on embedding field...")
+    collection.create_index(field_name="embedding", index_params=index_params)
+    print("Index created.")
+except Exception as e:
+    print(f"Index creation skipped or failed: {e}")
+
+print("Loading collection into memory...")
+collection.load()
+print("Collection loaded.")
+
+
+def embed_text(text: str):
+    # Dummy example: replace with your embedding model inference
+    # For example, use sentence-transformers or OpenAI embeddings
+    # Here we just return a fixed-size zero vector for demo purposes
+    import numpy as np
+
+    return np.random.rand(768).tolist()
+
 
 app = Flask(__name__)
-app.config["UPLOAD_FOLDER"] = "uploads"
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB max file size
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Global variables for models and collections
-embedding_model = None
-llm_pipeline = None
-collection = None
-
-# Milvus configuration
-COLLECTION_NAME = "document_chunks"
-DIMENSION = 384  # all-MiniLM-L6-v2 embedding dimension
-
-
-class RAGSystem:
-    def __init__(self):
-        self.setup_milvus()
-        self.load_models()
-
-    def setup_milvus(self):
-        """Initialize Milvus Lite connection and collection"""
-        try:
-            # Connect to Milvus Lite (embedded version)
-            connections.connect("default", host="localhost", port="19530")
-            logger.info("Connected to Milvus")
-
-            # Define collection schema
-            fields = [
-                FieldSchema(
-                    name="id", dtype=DataType.VARCHAR, max_length=100, is_primary=True
-                ),
-                FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=8192),
-                FieldSchema(
-                    name="embedding", dtype=DataType.FLOAT_VECTOR, dim=DIMENSION
-                ),
-                FieldSchema(name="filename", dtype=DataType.VARCHAR, max_length=256),
-                FieldSchema(name="chunk_index", dtype=DataType.INT64),
-                FieldSchema(name="timestamp", dtype=DataType.VARCHAR, max_length=50),
-            ]
-
-            schema = CollectionSchema(fields, "Document RAG collection")
-
-            # Create collection if it doesn't exist
-            if utility.has_collection(COLLECTION_NAME):
-                global collection
-                collection = Collection(COLLECTION_NAME)
-                logger.info(f"Loaded existing collection: {COLLECTION_NAME}")
-            else:
-                collection = Collection(COLLECTION_NAME, schema)
-                logger.info(f"Created new collection: {COLLECTION_NAME}")
-
-            # Create index for vector similarity search
-            index_params = {
-                "metric_type": "COSINE",
-                "index_type": "IVF_FLAT",
-                "params": {"nlist": 128},
-            }
-
-            if not collection.has_index():
-                collection.create_index("embedding", index_params)
-                logger.info("Created vector index")
-
-            collection.load()
-
-        except Exception as e:
-            logger.error(f"Milvus setup error: {e}")
-            # Fallback to in-memory storage if Milvus fails
-            self.use_fallback_storage()
-
-    def use_fallback_storage(self):
-        """Fallback to in-memory vector storage if Milvus fails"""
-        global collection
-        collection = InMemoryVectorStore()
-        logger.info("Using in-memory vector storage as fallback")
-
-    def load_models(self):
-        """Load embedding and LLM models"""
-        global embedding_model, llm_pipeline
-
-        try:
-            # Load embedding model
-            embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-            logger.info("Loaded embedding model: all-MiniLM-L6-v2")
-
-            # Load LLM - using a smaller model for local deployment
-            model_name = "microsoft/DialoGPT-small"  # Lightweight conversational model
-
-            # Check if CUDA is available
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info(f"Using device: {device}")
-
-            llm_pipeline = pipeline(
-                "text-generation",
-                model=model_name,
-                tokenizer=model_name,
-                device=0 if device == "cuda" else -1,
-                max_length=512,
-                do_sample=True,
-                temperature=0.7,
-                pad_token_id=50256,
-            )
-
-            logger.info(f"Loaded LLM: {model_name}")
-
-        except Exception as e:
-            logger.error(f"Model loading error: {e}")
-            raise
-
-
-class InMemoryVectorStore:
-    """Fallback in-memory vector storage"""
-
-    def __init__(self):
-        self.data = []
-        self.index = 0
-
-    def insert(self, data):
-        for item in zip(*data):
-            self.data.append(
-                {
-                    "id": item[0],
-                    "text": item[1],
-                    "embedding": np.array(item[2]),
-                    "filename": item[3],
-                    "chunk_index": item[4],
-                    "timestamp": item[5],
-                }
-            )
-
-    def search(self, query_embedding, limit=5):
-        if not self.data:
-            return []
-
-        query_vec = np.array(query_embedding)
-        similarities = []
-
-        for item in self.data:
-            similarity = np.dot(query_vec, item["embedding"]) / (
-                np.linalg.norm(query_vec) * np.linalg.norm(item["embedding"])
-            )
-            similarities.append((similarity, item))
-
-        # Sort by similarity (descending)
-        similarities.sort(key=lambda x: x[0], reverse=True)
-
-        # Return top results in expected format
-        results = []
-        for score, item in similarities[:limit]:
-            results.append([item["text"], score])
-
-        return [results, []]  # Return format matching Milvus
-
-
-def allowed_file(filename):
-    """Check if file extension is allowed"""
-    ALLOWED_EXTENSIONS = {"txt", "pdf", "docx", "doc"}
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
-
-
-def extract_text_from_file(filepath):
-    """Extract text from various file formats"""
-    filename = os.path.basename(filepath)
-    file_ext = filename.lower().split(".")[-1]
-
-    try:
-        if file_ext == "pdf":
-            return extract_text_from_pdf(filepath)
-        elif file_ext in ["docx", "doc"]:
-            return extract_text_from_docx(filepath)
-        else:  # txt and other text files
-            return extract_text_from_txt(filepath)
-    except Exception as e:
-        logger.error(f"Error extracting text from {filename}: {e}")
-        return ""
-
-
-def extract_text_from_pdf(filepath):
-    """Extract text from PDF file"""
-    text = ""
-    with open(filepath, "rb") as file:
-        pdf_reader = PyPDF2.PdfReader(file)
-        for page in pdf_reader.pages:
-            text += page.extract_text() + "\n"
-    return text
-
-
-def extract_text_from_docx(filepath):
-    """Extract text from DOCX file"""
-    doc = DocxDocument(filepath)
-    text = ""
-    for paragraph in doc.paragraphs:
-        text += paragraph.text + "\n"
-    return text
-
-
-def extract_text_from_txt(filepath):
-    """Extract text from TXT file with encoding detection"""
-    with open(filepath, "rb") as file:
-        raw_data = file.read()
-        encoding = chardet.detect(raw_data)["encoding"]
-
-    with open(filepath, "r", encoding=encoding or "utf-8") as file:
-        return file.read()
-
-
-def chunk_text(text, max_chunk_size=500, overlap=50):
-    """Split text into overlapping chunks"""
-    sentences = sent_tokenize(text)
-    chunks = []
-    current_chunk = ""
-
-    for sentence in sentences:
-        if len(current_chunk) + len(sentence) <= max_chunk_size:
-            current_chunk += sentence + " "
-        else:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            current_chunk = sentence + " "
-
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-
-    return chunks
-
-
-def store_document_chunks(chunks, filename):
-    """Store document chunks in vector database"""
-    global collection, embedding_model
-
-    if not chunks:
-        return False
-
-    try:
-        # Generate embeddings
-        embeddings = embedding_model.encode(chunks)
-
-        # Prepare data for insertion
-        ids = [str(uuid.uuid4()) for _ in chunks]
-        texts = chunks
-        embedding_list = embeddings.tolist()
-        filenames = [filename] * len(chunks)
-        chunk_indices = list(range(len(chunks)))
-        timestamps = [datetime.now().isoformat()] * len(chunks)
-
-        # Insert data
-        data = [ids, texts, embedding_list, filenames, chunk_indices, timestamps]
-        collection.insert(data)
-
-        if hasattr(collection, "flush"):
-            collection.flush()
-
-        logger.info(f"Stored {len(chunks)} chunks for file: {filename}")
-        return True
-
-    except Exception as e:
-        logger.error(f"Error storing chunks: {e}")
-        return False
-
-
-def search_similar_chunks(query, top_k=5):
-    """Search for similar document chunks"""
-    global collection, embedding_model
-
-    try:
-        # Generate query embedding
-        query_embedding = embedding_model.encode([query])
-
-        # Search parameters
-        search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
-
-        # Perform search
-        results = collection.search(
-            query_embedding.tolist(),
-            "embedding",
-            search_params,
-            limit=top_k,
-            output_fields=["text", "filename", "chunk_index"],
-        )
-
-        # Format results
-        retrieved_chunks = []
-        for hits in results:
-            for hit in hits:
-                retrieved_chunks.append(
-                    {
-                        "text": hit.entity.get("text"),
-                        "filename": hit.entity.get("filename"),
-                        "chunk_index": hit.entity.get("chunk_index"),
-                        "score": hit.score,
-                    }
-                )
-
-        return retrieved_chunks
-
-    except Exception as e:
-        logger.error(f"Search error: {e}")
-        return []
-
-
-def generate_response(query, context_chunks):
-    """Generate response using LLM with retrieved context"""
-    global llm_pipeline
-
-    # Prepare context
-    context = "\n".join(
-        [chunk["text"] for chunk in context_chunks[:3]]
-    )  # Use top 3 chunks
-
-    # Create prompt
-    prompt = f"""Context information:
-{context}
-
-Question: {query}
-
-Based on the context provided above, please provide a helpful and accurate answer:"""
-
-    try:
-        # Generate response
-        response = llm_pipeline(
-            prompt, max_length=len(prompt.split()) + 100, num_return_sequences=1
-        )
-
-        # Extract generated text (remove the prompt)
-        generated_text = response[0]["generated_text"]
-        answer = generated_text[len(prompt) :].strip()
-
-        if not answer:
-            answer = "I couldn't generate a specific answer based on the provided context. Please try rephrasing your question."
-
-        return answer
-
-    except Exception as e:
-        logger.error(f"LLM generation error: {e}")
-        return "Sorry, I encountered an error while generating the response."
-
-
-# Initialize RAG system
-rag_system = None
-
-
-@app.before_first_request
-def initialize_rag():
-    global rag_system
-    try:
-        rag_system = RAGSystem()
-        logger.info("RAG system initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize RAG system: {e}")
-
-
-# HTML template for the web interface
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>RAG System with Milvus</title>
-    <style>
-        body { font-family: Arial, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }
-        .container { display: flex; gap: 20px; }
-        .upload-section, .chat-section { flex: 1; }
-        .upload-box { border: 2px dashed #ccc; padding: 20px; text-align: center; margin-bottom: 20px; }
-        .chat-box { border: 1px solid #ccc; height: 400px; overflow-y: auto; padding: 10px; margin-bottom: 10px; }
-        .message { margin-bottom: 10px; }
-        .user-message { background: #e3f2fd; padding: 8px; border-radius: 5px; }
-        .bot-message { background: #f5f5f5; padding: 8px; border-radius: 5px; }
-        .input-group { display: flex; gap: 10px; }
-        .input-group input { flex: 1; padding: 8px; }
-        .btn { padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
-        .btn:hover { background: #0056b3; }
-        .status { margin-top: 10px; padding: 10px; border-radius: 4px; }
-        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-    </style>
-</head>
-<body>
-    <h1>RAG System with Milvus Lite</h1>
-    
-    <div class="container">
-        <div class="upload-section">
-            <h3>Document Upload</h3>
-            <div class="upload-box">
-                <input type="file" id="fileInput" accept=".txt,.pdf,.docx,.doc" multiple>
-                <br><br>
-                <button class="btn" onclick="uploadFiles()">Upload Documents</button>
-            </div>
-            <div id="uploadStatus"></div>
-        </div>
-        
-        <div class="chat-section">
-            <h3>Ask Questions</h3>
-            <div id="chatBox" class="chat-box"></div>
-            <div class="input-group">
-                <input type="text" id="questionInput" placeholder="Ask a question about your documents..." onkeypress="handleKeyPress(event)">
-                <button class="btn" onclick="askQuestion()">Ask</button>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        function uploadFiles() {
-            const fileInput = document.getElementById('fileInput');
-            const statusDiv = document.getElementById('uploadStatus');
-            
-            if (fileInput.files.length === 0) {
-                statusDiv.innerHTML = '<div class="status error">Please select files to upload.</div>';
-                return;
-            }
-            
-            const formData = new FormData();
-            for (let file of fileInput.files) {
-                formData.append('files', file);
-            }
-            
-            statusDiv.innerHTML = '<div class="status">Uploading and processing files...</div>';
-            
-            fetch('/upload', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    statusDiv.innerHTML = `<div class="status success">${data.message}</div>`;
-                    fileInput.value = '';
-                } else {
-                    statusDiv.innerHTML = `<div class="status error">${data.message}</div>`;
-                }
-            })
-            .catch(error => {
-                statusDiv.innerHTML = `<div class="status error">Upload failed: ${error}</div>`;
-            });
-        }
-        
-        function askQuestion() {
-            const questionInput = document.getElementById('questionInput');
-            const chatBox = document.getElementById('chatBox');
-            const question = questionInput.value.trim();
-            
-            if (!question) return;
-            
-            // Add user message
-            chatBox.innerHTML += `<div class="message user-message"><strong>You:</strong> ${question}</div>`;
-            chatBox.scrollTop = chatBox.scrollHeight;
-            
-            // Clear input
-            questionInput.value = '';
-            
-            // Add loading message
-            chatBox.innerHTML += `<div class="message bot-message" id="loadingMessage"><strong>Bot:</strong> Thinking...</div>`;
-            chatBox.scrollTop = chatBox.scrollHeight;
-            
-            fetch('/query', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({query: question})
-            })
-            .then(response => response.json())
-            .then(data => {
-                document.getElementById('loadingMessage').remove();
-                chatBox.innerHTML += `<div class="message bot-message"><strong>Bot:</strong> ${data.answer}</div>`;
-                chatBox.scrollTop = chatBox.scrollHeight;
-            })
-            .catch(error => {
-                document.getElementById('loadingMessage').remove();
-                chatBox.innerHTML += `<div class="message bot-message"><strong>Bot:</strong> Sorry, I encountered an error: ${error}</div>`;
-                chatBox.scrollTop = chatBox.scrollHeight;
-            });
-        }
-        
-        function handleKeyPress(event) {
-            if (event.key === 'Enter') {
-                askQuestion();
-            }
-        }
-    </script>
-</body>
-</html>
+# --------- Model Loading ---------
+MODEL_PATH = "/Users/johnmoses/.cache/lm-studio/models/TheBloke/Llama-2-7B-Chat-GGUF/llama-2-7b-chat.Q4_K_M.gguf"  # <-- Update this path!
+llm = Llama(model_path=MODEL_PATH)
+
+# --------- Logging Setup ---------
+logger = logging.getLogger("financial_chatbot")
+logger.setLevel(logging.INFO)
+handler = logging.FileHandler("financial_chatbot.log")
+formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+# --------- Global Evaluation Results ---------
+latest_eval_results = {}
+
+# --------- Helper Functions ---------
+
+
+def generate_response(prompt, max_tokens=150, temperature=0.7):
+    start_time = time.time()
+    output = llm.create_completion(
+        prompt=prompt,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        stop=["User:", "Assistant:"],
+    )
+    latency = time.time() - start_time
+    response_text = output["choices"][0]["text"].strip()
+    logger.info(f"Model inference latency: {latency:.3f} seconds")
+    return response_text, latency
+
+
+def build_fewshot_cot_prompt(user_query: str) -> str:
+    system_prompt = """
+[INST] <<SYS>>
+You are a precise financial assistant. Your task is to classify the intent of a user query into one of these categories:
+- get_stock_price
+- get_historical_data
+- calculate_interest
+- get_compliance_docs
+- compare_stock_prices
+- general_chat
+
+For each query, first explain your reasoning step-by-step, then output ONLY the intent label exactly as above.
+
+If the query is ambiguous or does not fit any category, respond with "general_chat".
+
+Be concise and accurate.
+<</SYS>>
 """
+
+    examples = """
+User query: "What is the current price of AAPL stock?"
+Reasoning: The user is asking about the current price of a specific stock ticker, so the intent is to get stock price.
+Intent: get_stock_price
+
+User query: "Show me the stock history of Tesla for the last month."
+Reasoning: The user requests historical stock data for Tesla, so the intent is to get historical data.
+Intent: get_historical_data
+
+User query: "Calculate interest on 1000 dollars at 5% for 2 years."
+Reasoning: The user wants to calculate interest based on principal, rate, and time, so the intent is calculate_interest.
+Intent: calculate_interest
+
+User query: "Where can I find GDPR compliance documents?"
+Reasoning: The user is asking for compliance documents related to GDPR, so the intent is get_compliance_docs.
+Intent: get_compliance_docs
+
+User query: "Compare the prices of MSFT and GOOG stocks."
+Reasoning: The user wants to compare prices of two stocks, so the intent is compare_stock_prices.
+Intent: compare_stock_prices
+
+User query: "Hello, how are you?"
+Reasoning: This is a general greeting not related to finance, so the intent is general_chat.
+Intent: general_chat
+
+User query: "{user_query}"
+Reasoning:"""
+
+    return f"{system_prompt}{examples}"
+
+
+def detect_intent_llama(user_query):
+    prompt = build_fewshot_cot_prompt(user_query).replace("{user_query}", user_query)
+    output_text, _ = generate_response(prompt, max_tokens=50, temperature=0.0)
+
+    valid_intents = {
+        "get_stock_price",
+        "get_historical_data",
+        "calculate_interest",
+        "get_compliance_docs",
+        "compare_stock_prices",
+        "general_chat",
+    }
+    lines = output_text.split("\n")
+    intent_line = None
+    for line in reversed(lines):
+        line_clean = line.strip().lower().replace(".", "")
+        if line_clean in valid_intents:
+            intent_line = line_clean
+            break
+
+    return intent_line if intent_line else "general_chat"
+
+
+# --------- Financial Helper Functions ---------
+
+
+def calculate_interest(principal, rate, time):
+    try:
+        p = float(principal)
+        r = float(rate)
+        t = float(time)
+        interest = (p * r * t) / 100
+        return f"Calculated simple interest is ${interest:.2f}"
+    except Exception as e:
+        return f"Error calculating interest: {str(e)}"
+
+
+def get_stock_price(ticker):
+    try:
+        ticker_obj = yf.Ticker(ticker)
+        price = ticker_obj.history(period="1d")["Close"][-1]
+        return f"The current price of {ticker.upper()} is ${price:.2f}"
+    except Exception as e:
+        return f"Error fetching stock price for {ticker}: {str(e)}"
+
+
+def compare_stock_prices(ticker1, ticker2):
+    try:
+        price1 = yf.Ticker(ticker1).history(period="1d")["Close"][-1]
+        price2 = yf.Ticker(ticker2).history(period="1d")["Close"][-1]
+        if price1 > price2:
+            return f"{ticker1.upper()} (${price1:.2f}) is priced higher than {ticker2.upper()} (${price2:.2f})"
+        elif price2 > price1:
+            return f"{ticker2.upper()} (${price2:.2f}) is priced higher than {ticker1.upper()} (${price1:.2f})"
+        else:
+            return f"Both {ticker1.upper()} and {ticker2.upper()} have the same price of ${price1:.2f}"
+    except Exception as e:
+        return f"Error comparing stock prices: {str(e)}"
+
+
+def get_compliance_docs(topic):
+    docs = {
+        "gdpr": "GDPR info: https://gdpr-info.eu/",
+        "sox": "Sarbanes-Oxley Act info: https://www.soxlaw.com/",
+        "basel": "Basel III framework: https://www.bis.org/bcbs/basel3.htm",
+    }
+    return docs.get(
+        topic.lower(), "Compliance document not found for the specified topic."
+    )
+
+
+def get_historical_data(ticker, period="1mo"):
+    try:
+        ticker_obj = yf.Ticker(ticker)
+        hist = ticker_obj.history(period=period)
+        if hist.empty:
+            return f"No historical data available for {ticker} for period {period}."
+        summary = hist[["Open", "High", "Low", "Close", "Volume"]].tail(5).to_dict()
+        return f"Last 5 days of {ticker.upper()} historical  {summary}"
+    except Exception as e:
+        return f"Error fetching historical data for {ticker}: {str(e)}"
+
+
+# --- RAG Integration ---
+def generate_rag_response(user_query):
+    # Embed the query
+    query_embedding = embed_text(user_query)
+
+    # Retrieve relevant docs from Milvus
+    retrieved_docs = milvus_client.search(query_embedding, top_k=3)
+
+    # Combine retrieved docs as context
+    context = "\n\n".join(retrieved_docs)
+
+    prompt = f"""You are a financial assistant. Use the following context to answer the question.
+
+    Context:
+    {context}
+
+    Question:
+    {user_query}
+
+    Answer:"""
+
+    response, _ = generate_response(prompt, max_tokens=150, temperature=0.7)
+    return response
+
+
+# --------- Advanced Evaluation Metrics ---------
+
+
+def compute_bleu(candidate, reference):
+    candidate_tokens = word_tokenize(candidate)
+    reference_tokens = [word_tokenize(reference)]
+    smoothie = SmoothingFunction().method4
+    return sentence_bleu(
+        reference_tokens, candidate_tokens, smoothing_function=smoothie
+    )
+
+
+def evaluate_model(dataset):
+    total = len(dataset)
+    correct_intent = 0
+    response_matches = 0
+    total_latency = 0.0
+
+    candidates = []
+    references = []
+
+    for entry in dataset:
+        query = entry["query"]
+        expected_intent = entry.get("expected_intent")
+        expected_response = entry.get("expected_response", "").lower()
+
+        start = time.time()
+        predicted_intent = detect_intent_llama(query)
+        prompt = f"User: {query}\nAssistant:"
+        response, latency = generate_response(prompt, max_tokens=150, temperature=0.0)
+        response_lower = response.lower()
+        total_latency += latency
+
+        candidates.append(response_lower)
+        references.append(expected_response)
+
+        if predicted_intent == expected_intent:
+            correct_intent += 1
+
+        if expected_response in response_lower:
+            response_matches += 1
+
+        logger.info(f"Eval Query: {query}")
+        logger.info(
+            f"Expected Intent: {expected_intent}, Predicted Intent: {predicted_intent}"
+        )
+        logger.info(f"Latency: {latency:.3f}s")
+
+    intent_accuracy = correct_intent / total if total else 0
+    response_accuracy = response_matches / total if total else 0
+    avg_latency = total_latency / total if total else 0
+
+    # Compute BERTScore
+    P, R, F1 = bert_score(candidates, references, lang="en", rescale_with_baseline=True)
+    bert_precision = P.mean().item()
+    bert_recall = R.mean().item()
+    bert_f1 = F1.mean().item()
+
+    # Compute BLEU
+    bleu_scores = [compute_bleu(c, r) for c, r in zip(candidates, references)]
+    avg_bleu = sum(bleu_scores) / len(bleu_scores) if bleu_scores else 0
+
+    results = {
+        "total_samples": total,
+        "intent_accuracy": intent_accuracy,
+        "response_accuracy": response_accuracy,
+        "average_latency_seconds": avg_latency,
+        "bert_precision": bert_precision,
+        "bert_recall": bert_recall,
+        "bert_f1": bert_f1,
+        "average_bleu": avg_bleu,
+    }
+
+    logger.info(f"Evaluation Summary: {results}")
+    return results
+
+
+# --------- Periodic Evaluation Thread ---------
+
+
+def load_offline_dataset(path="offline_test_data.json"):
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def run_periodic_evaluation(interval_hours=0.003):
+    def eval_loop():
+        global latest_eval_results
+        while True:
+            logger.info("Starting periodic evaluation...")
+            dataset = load_offline_dataset()
+            latest_eval_results = evaluate_model(dataset)
+            logger.info("Periodic evaluation completed.")
+            time.sleep(interval_hours * 3600)  # Sleep for interval
+
+    thread = threading.Thread(target=eval_loop, daemon=True)
+    thread.start()
+
+
+run_periodic_evaluation()
+
+# --------- Flask Routes ---------
 
 
 @app.route("/")
 def index():
-    return render_template_string(HTML_TEMPLATE)
+    return render_template("index.html")  # Your chat UI (see below)
 
 
-@app.route("/upload", methods=["POST"])
-def upload_files():
-    try:
-        if "files" not in request.files:
-            return jsonify({"success": False, "message": "No files provided"})
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    data = request.json
+    user_message = data.get("message", "")
+    intent = detect_intent_llama(user_message)
 
-        files = request.files.getlist("files")
+    # Use RAG for general chat or compliance docs
+    if intent in ["general_chat", "get_compliance_docs"]:
+        response = generate_rag_response(user_message)
+    else:
+        tickers = re.findall(r'\b[A-Za-z]{1,5}\b', user_message.upper())
+        numbers = re.findall(r"[-+]?\d*\.\d+|\d+", user_message)
 
-        if not files or all(f.filename == "" for f in files):
-            return jsonify({"success": False, "message": "No files selected"})
-
-        # Create upload directory if it doesn't exist
-        os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
-
-        processed_files = 0
-        total_chunks = 0
-
-        for file in files:
-            if file and allowed_file(file.filename):
-                filename = secure_filename(file.filename)
-                filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-                file.save(filepath)
-
-                # Extract text
-                text = extract_text_from_file(filepath)
-
-                if text.strip():
-                    # Chunk text
-                    chunks = chunk_text(text)
-
-                    # Store in vector database
-                    if store_document_chunks(chunks, filename):
-                        processed_files += 1
-                        total_chunks += len(chunks)
-
-                # Clean up uploaded file
-                os.remove(filepath)
-
-        if processed_files > 0:
-            return jsonify(
-                {
-                    "success": True,
-                    "message": f"Successfully processed {processed_files} files with {total_chunks} chunks",
-                }
-            )
+        if intent == "get_stock_price":
+            ticker = tickers[0] if tickers else None
+            if ticker:
+                response = get_stock_price(ticker)
+            else:
+                response = "Please specify a valid stock ticker symbol."
+        elif intent == "get_historical_data":
+            ticker = tickers[0] if tickers else None
+            response = get_historical_data(ticker) if ticker else "Please specify a stock ticker symbol."
+        elif intent == "compare_stock_prices":
+            if len(tickers) >= 2:
+                response = compare_stock_prices(tickers[0], tickers[1])
+            else:
+                response = "Please specify two stock ticker symbols to compare."
+        elif intent == "calculate_interest":
+            if len(numbers) >= 3:
+                response = calculate_interest(numbers[0], numbers[1], numbers[2])
+            else:
+                response = "Please provide principal, rate, and time for interest calculation."
         else:
-            return jsonify({"success": False, "message": "No files could be processed"})
+            # fallback general chat
+            prompt = f"User: {user_message}\nAssistant:"
+            response, _ = generate_response(prompt, max_tokens=150, temperature=0.7)
 
-    except Exception as e:
-        logger.error(f"Upload error: {e}")
-        return jsonify({"success": False, "message": f"Upload failed: {str(e)}"})
-
-
-@app.route("/query", methods=["POST"])
-def query():
-    try:
-        data = request.get_json()
-        query_text = data.get("query", "").strip()
-
-        if not query_text:
-            return jsonify({"answer": "Please provide a question."})
-
-        # Search for relevant chunks
-        relevant_chunks = search_similar_chunks(query_text, top_k=5)
-
-        if not relevant_chunks:
-            return jsonify(
-                {"answer": "No relevant information found in the uploaded documents."}
-            )
-
-        # Generate response
-        answer = generate_response(query_text, relevant_chunks)
-
-        return jsonify({"answer": answer})
-
-    except Exception as e:
-        logger.error(f"Query error: {e}")
-        return jsonify(
-            {"answer": "Sorry, I encountered an error while processing your question."}
-        )
+    return jsonify({"intent": intent, "response": response})
 
 
-@app.route("/health")
-def health():
-    return jsonify(
-        {
-            "status": "healthy",
-            "models_loaded": embedding_model is not None and llm_pipeline is not None,
-        }
-    )
+@app.route("/api/evaluation", methods=["GET"])
+def get_evaluation_results():
+    if latest_eval_results:
+        return jsonify(latest_eval_results)
+    else:
+        return jsonify({"message": "Evaluation results not available yet."}), 503
 
+
+@app.route("/evaluation-dashboard")
+def evaluation_dashboard():
+    return render_template("evaluation_dashboard.html")
+
+
+# --------- Run Flask App ---------
 
 if __name__ == "__main__":
-    # Create upload directory
-    os.makedirs("uploads", exist_ok=True)
-
-    # Initialize RAG system
-    try:
-        rag_system = RAGSystem()
-        logger.info("RAG system initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize RAG system: {e}")
-        exit(1)
-
-    app.run(debug=True, host="127.0.0.1", port=5001)
+    app.run(debug=True, use_reloader=False, host="127.0.0.1", port=5001)

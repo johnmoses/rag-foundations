@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class MilvusRAG:
-    def __init__(self, db_path: str = "milvus_rag_db1.db"):
+    def __init__(self, db_path: str = "milvus_rag_db.db"):
         """Initialize Milvus RAG system"""
         self.client = MilvusClient(db_path)
         self.collection_name = "documents"

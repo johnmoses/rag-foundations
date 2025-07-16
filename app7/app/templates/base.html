@@ -2,45 +2,82 @@
 <html lang="en">
 
 <head>
-  <meta charset="UTF-8" />
-  <title>{% block title %}My App{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}UltraLearning App{% endblock %}</title>
+    
+    <!-- Main CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    
+    {% block extrahead %}{% endblock %}
 </head>
 
 <body>
-  <nav>
-    <a href="{{ url_for('quiz.dashboard') }}">Dashboard</a>
-    {% if current_user.is_authenticated %}
-    <a href="{{ url_for('homework.help_homework') }}">Homework Helper</a>
-    <a href="{{ url_for('summarizer.summarize_content') }}">Content Summarizer</a>
-    {% if current_user.role == 'teacher' %}
-    <a href="{{ url_for('quiz.generate') }}">Generate Quiz</a>
-    <a href="{{ url_for('quiz.list_quizzes') }}">Quiz List</a>
-    <a href="{{ url_for('quiz.my_quizzes') }}">My Quizzes</a>
-    <a href="{{ url_for('admin.list_users') }}">Users List</a>
-    {% elif current_user.role == 'student' %}
-    <a href="{{ url_for('quiz.take_quiz', quiz_id=1) }}">Take Quiz</a>
-    {% endif %}
-    <a href="{{ url_for('chat.chat_page') }}">Chat</a>
-    <a href="{{ url_for('auth.logout') }}">Logout</a>
-    {% else %}
-    <a href="{{ url_for('auth.login') }}">Login</a>
-    <a href="{{ url_for('auth.register') }}">Register</a>
-    {% endif %}
-  </nav>
+    <header role="banner" style="display:flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid #ccc;">
+        <h1 style="margin:0; font-size:1.5rem;">
+            <a href="" style="text-decoration:none; color:inherit;">UltraLearning App</a>
+        </h1>
+        <nav role="navigation" aria-label="Main navigation">
+            {% if current_user.is_authenticated %}
+                <span aria-live="polite" style="margin-right: 1rem;">Welcome, {{ current_user.username }}!</span>
+                <a href="{{ url_for('flashcards.list_packs') }}" style="margin-right: 1rem;">Flashcards</a>
+                <a href="{{ url_for('chat.home') }}" style="margin-right: 1rem;">Chat</a>
+                <a href="{{ url_for('auth.logout') }}" id="logout-link">Logout</a>
+            {% else %}
+                <a href="{{ url_for('auth.login') }}" style="margin-right: 1rem;">Login</a>
+                <a href="{{ url_for('auth.register') }}">Register</a>
+            {% endif %}
+        </nav>
+    </header>
 
-  <div>
-    {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-    {% for category, message in messages %}
-    <div class="flash {{ category }}">{{ message }}</div>
-    {% endfor %}
-    {% endif %}
-    {% endwith %}
-  </div>
+    <main role="main" style="padding: 1rem; max-width: 900px; margin: auto;">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <ul class="flashes" role="alert" style="list-style-type: none; padding-left: 0;">
+                    {% for category, message in messages %}
+                        <li class="flash flash-{{ category }}" style="background-color: #ffefc1; border: 1px solid #e6db55; padding: 0.75rem 1rem; margin-bottom:0.5rem; border-radius: 4px;">
+                            {{ message }}
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+        {% endwith %}
+        
+        {% block content %}{% endblock %}
+    </main>
 
-  {% block content %}{% endblock %}
-  {% block scripts %}{% endblock %}
+    <footer role="contentinfo" style="margin-top: 2rem; padding: 1rem 0; font-size: 0.9rem; color: #555; text-align: center; border-top: 1px solid #ccc;">
+        &copy; {{ current_year | default('2025') }} UltraLearning App
+    </footer>
+
+    <!-- Core script (can be moved to separate .js file) -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const logoutLink = document.getElementById('logout-link');
+            if (logoutLink) {
+                logoutLink.addEventListener('click', event => {
+                    if (!confirm('Are you sure you want to logout?')) {
+                        event.preventDefault();
+                    }
+                });
+            }
+        });
+
+        // Example form validation function, reusable on login page/forms
+        function validateLoginForm(form) {
+            if (!form.username_or_email.value.trim()) {
+                alert('Please enter your username or email.');
+                return false;
+            }
+            if (!form.password.value.trim()) {
+                alert('Please enter your password.');
+                return false;
+            }
+            return true;
+        }
+    </script>
+
+    {% block extrajs %}{% endblock %}
 </body>
 
 </html>

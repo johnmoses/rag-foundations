@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Shared Pack: {{ pack.name }}{% endblock %}
+{% block content %}
+<h2>Shared Flashcard Pack: {{ pack.name }}</h2>
+<ul>
+  {% for card in flashcards %}
+  <li>
+    <strong>Question:</strong> {{ card.question }}<br>
+    <strong>Answer:</strong> {{ card.answer }}
+  </li>
+  {% else %}
+  <li>No flashcards in this pack.</li>
+  {% endfor %}
+</ul>
+<p>This is a shared pack. You can study these flashcards but cannot edit them.</p>
+{% endblock %}

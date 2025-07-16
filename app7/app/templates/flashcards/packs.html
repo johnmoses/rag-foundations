@@ -1,0 +1,364 @@
+{% extends "base.html" %}
+
+{% block title %}Your Flashcard Packs{% endblock %}
+
+{% block content %}
+<h2>Your Flashcard Packs</h2>
+
+<!-- Create new pack -->
+<button id="createPackBtn">Create New Pack</button>
+
+<!-- Share link container -->
+<div id="shareLinkContainer" style="margin-top:1em; color:#0055cc;"></div>
+
+<!-- List of packs -->
+<ul id="packList" style="margin-top: 1em; padding-left: 1.2rem;">
+  {% if packs %}
+    {% for pack in packs %}
+      <li data-pack-id="{{ pack.id }}" style="margin-bottom: 0.8em;">
+        <strong>{{ pack.name }}</strong>
+        {% if pack.is_shared %}
+          <span style="color: green; font-style: italic;">(Shared)</span>
+        {% else %}
+          <span style="color: gray; font-style: italic;">(Private)</span>
+        {% endif %}
+        <button class="viewPackBtn" data-pack-id="{{ pack.id }}" style="margin-left:1em;">View Flashcards</button>
+        <button class="sharePackBtn" data-pack-id="{{ pack.id }}" style="margin-left:1em;">Share Pack</button>
+      </li>
+    {% endfor %}
+  {% else %}
+    <li>You have no flashcard packs yet. Click "Create New Pack" to get started!</li>
+  {% endif %}
+</ul>
+
+<hr />
+
+<!-- Flashcards list container -->
+<div id="flashcardsContainer">
+  <h3>Flashcards</h3>
+  <p>Select a flashcard pack to view its cards here.</p>
+</div>
+
+<!-- Add flashcard form -->
+<div id="addFlashcardSection" style="display:none; margin-top: 2em;">
+  <h3>Add a New Flashcard</h3>
+  <form id="addFlashcardForm">
+    <input type="text" id="flashcardQuestion" placeholder="Question" style="width:45%;" required />
+    <input type="text" id="flashcardAnswer" placeholder="Answer" style="width:45%;" required />
+    <button type="submit">Add Flashcard</button>
+  </form>
+</div>
+
+<!-- Generate flashcards from text form -->
+<div id="generateFlashcardsSection" style="display:none; margin-top: 2em;">
+  <h3>Generate Flashcards from Text</h3>
+  <textarea id="generateTextInput" rows="5" cols="60" placeholder="Paste or type text here..."></textarea><br />
+  <label for="numFlashcardsInput">Number of flashcards:</label>
+  <input type="number" id="numFlashcardsInput" min="1" max="20" value="5" /><br />
+  <button id="generateFlashcardsBtn">Generate Flashcards</button>
+</div>
+
+<!-- Generate flashcards from topic -->
+<div id="generateFromTopicSection" style="display:none; margin-top: 2em;">
+  <h3>Generate Flashcards from a Topic</h3>
+  <input type="text" id="topicInput" placeholder="Enter a topic or keyword" style="width:300px;" /><br /><br />
+  <label for="numTopicFlashcardsInput">Number of flashcards to generate:</label>
+  <input type="number" id="numTopicFlashcardsInput" min="1" max="20" value="5" style="width:80px;" /><br /><br />
+  <button id="generateFromTopicBtn">Generate Flashcards</button>
+</div>
+
+<script>
+let currentPackId = null;
+
+// Helper to render flashcards list with Edit/Delete buttons
+function renderFlashcards(flashcards) {
+  const container = document.getElementById('flashcardsContainer');
+  if (flashcards.length === 0) {
+    container.innerHTML = `<p>No flashcards in this pack yet.</p>`;
+    return;
+  }
+
+  container.innerHTML = '<h3>Flashcards</h3><ul style="list-style: none; padding: 0;">';
+  flashcards.forEach(card => {
+    container.innerHTML += `
+      <li data-flashcard-id="${card.id}" style="margin-bottom: 1em; border-bottom: 1px solid #ccc; padding-bottom: 0.5em;">
+        <strong>Q:</strong> <span class="question-display">${card.question}</span><br/>
+        <strong>A:</strong> <span class="answer-display">${card.answer}</span><br/>
+
+        <button class="editFlashcardBtn" data-id="${card.id}">Edit</button>
+        <button class="deleteFlashcardBtn" data-id="${card.id}">Delete</button>
+
+        <div class="editForm" style="display:none; margin-top: 0.5em;">
+          <input type="text" class="editQuestionInput" value="${card.question}" style="width:40%;" />
+          <input type="text" class="editAnswerInput" value="${card.answer}" style="width:40%;" />
+          <button class="saveEditBtn" data-id="${card.id}">Save</button>
+          <button class="cancelEditBtn" data-id="${card.id}">Cancel</button>
+        </div>
+      </li>
+    `;
+  });
+  container.innerHTML += '</ul>';
+
+  attachFlashcardEventHandlers();
+}
+
+// Attach event listeners for editing and deleting flashcards
+function attachFlashcardEventHandlers() {
+  document.querySelectorAll('.editFlashcardBtn').forEach(btn => {
+    btn.onclick = e => {
+      const li = e.target.closest('li');
+      li.querySelector('.editForm').style.display = 'block';
+      li.querySelector('.editFlashcardBtn').style.display = 'none';
+      li.querySelector('.deleteFlashcardBtn').style.display = 'none';
+      li.querySelector('.question-display').style.display = 'none';
+      li.querySelector('.answer-display').style.display = 'none';
+    };
+  });
+
+  document.querySelectorAll('.cancelEditBtn').forEach(btn => {
+    btn.onclick = e => {
+      const li = e.target.closest('li');
+      li.querySelector('.editForm').style.display = 'none';
+      li.querySelector('.editFlashcardBtn').style.display = 'inline';
+      li.querySelector('.deleteFlashcardBtn').style.display = 'inline';
+      li.querySelector('.question-display').style.display = 'inline';
+      li.querySelector('.answer-display').style.display = 'inline';
+    };
+  });
+
+  document.querySelectorAll('.saveEditBtn').forEach(btn => {
+    btn.onclick = async e => {
+      const id = e.target.dataset.id;
+      const li = e.target.closest('li');
+      const question = li.querySelector('.editQuestionInput').value.trim();
+      const answer = li.querySelector('.editAnswerInput').value.trim();
+
+      if (!question || !answer) {
+        alert('Both question and answer must be provided.');
+        return;
+      }
+
+      try {
+        const res = await fetch(`/flashcards/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question, answer })
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          const errMsg = errData.error || 'Failed to update flashcard';
+          alert(errMsg);
+          return;
+        }
+
+        // Update display
+        li.querySelector('.question-display').textContent = question;
+        li.querySelector('.answer-display').textContent = answer;
+
+        // Hide edit form; show text and buttons again
+        li.querySelector('.editForm').style.display = 'none';
+        li.querySelector('.editFlashcardBtn').style.display = 'inline';
+        li.querySelector('.deleteFlashcardBtn').style.display = 'inline';
+        li.querySelector('.question-display').style.display = 'inline';
+        li.querySelector('.answer-display').style.display = 'inline';
+
+      } catch (err) {
+        alert(err.message);
+      }
+    };
+  });
+
+  document.querySelectorAll('.deleteFlashcardBtn').forEach(btn => {
+    btn.onclick = async e => {
+      if (!confirm('Are you sure you want to delete this flashcard?')) return;
+      const id = e.target.dataset.id;
+
+      try {
+        const res = await fetch(`/flashcards/${id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Failed to delete flashcard');
+
+        // Remove flashcard from DOM
+        const li = e.target.closest('li');
+        li.remove();
+
+      } catch (err) {
+        alert(err.message);
+      }
+    };
+  });
+}
+
+///////////////
+// Event Listeners for Packs and Flashcards
+
+// Create new pack
+document.getElementById('createPackBtn').onclick = async () => {
+  const packName = prompt('Please enter a name for your new flashcard pack:');
+  if (!packName) return;
+
+  const res = await fetch('/flashcards/packs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: packName })
+  });
+
+  if (res.ok) {
+    alert('Pack created!');
+    location.reload();
+  } else {
+    alert('Failed to create pack');
+  }
+};
+
+// View flashcards in selected pack
+document.querySelectorAll('.viewPackBtn').forEach(button => {
+  button.onclick = async e => {
+    currentPackId = e.target.dataset.packId;
+    const res = await fetch(`/flashcards/packs/${currentPackId}/flashcards`);
+    if (!res.ok) {
+      alert('Failed to load flashcards.');
+      document.getElementById('flashcardsContainer').innerHTML = '';
+      document.getElementById('addFlashcardSection').style.display = 'none';
+      document.getElementById('generateFlashcardsSection').style.display = 'none';
+      document.getElementById('generateFromTopicSection').style.display = 'none';
+      return;
+    }
+    const flashcards = await res.json();
+    renderFlashcards(flashcards);
+    document.getElementById('shareLinkContainer').innerHTML = '';
+
+    // Show add/generate sections
+    document.getElementById('addFlashcardSection').style.display = 'block';
+    document.getElementById('generateFlashcardsSection').style.display = 'block';
+    document.getElementById('generateFromTopicSection').style.display = 'block';
+  };
+});
+
+// Share pack button
+document.querySelectorAll('.sharePackBtn').forEach(button => {
+  button.onclick = async e => {
+    const packId = e.target.dataset.packId;
+    const res = await fetch(`/flashcards/packs/${packId}/share`, { method: 'POST' });
+    const container = document.getElementById('shareLinkContainer');
+    if (res.ok) {
+      const data = await res.json();
+      container.innerHTML = `Share this link with friends: <a href="${data.share_url}" target="_blank">${data.share_url}</a>`;
+    } else {
+      container.innerHTML = 'Failed to generate share link.';
+    }
+  };
+});
+
+// Add flashcard manually
+document.getElementById('addFlashcardForm').addEventListener('submit', async e => {
+  e.preventDefault();
+
+  if (!currentPackId) {
+    alert('Please select a flashcard pack first.');
+    return;
+  }
+
+  const question = document.getElementById('flashcardQuestion').value.trim();
+  const answer = document.getElementById('flashcardAnswer').value.trim();
+
+  if (!question || !answer) {
+    alert('Both question and answer are required.');
+    return;
+  }
+
+  const res = await fetch(`/flashcards/packs/${currentPackId}/flashcards`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, answer })
+  });
+
+  if (res.ok) {
+    alert('Flashcard added!');
+    document.getElementById('flashcardQuestion').value = '';
+    document.getElementById('flashcardAnswer').value = '';
+
+    const flashcardsRes = await fetch(`/flashcards/packs/${currentPackId}/flashcards`);
+    const flashcards = await flashcardsRes.json();
+    renderFlashcards(flashcards);
+  } else {
+    const error = await res.json();
+    alert('Failed to add flashcard: ' + (error.error || 'Unknown error'));
+  }
+});
+
+// Generate flashcards from text
+document.getElementById('generateFlashcardsBtn').onclick = async () => {
+  if (!currentPackId) {
+    alert('Please select a flashcard pack first.');
+    return;
+  }
+
+  const text = document.getElementById('generateTextInput').value.trim();
+  if (!text) {
+    alert('Please enter some text to generate flashcards.');
+    return;
+  }
+
+  const numFlashcards = parseInt(document.getElementById('numFlashcardsInput').value, 10) || 5;
+
+  const res = await fetch(`/flashcards/packs/${currentPackId}/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, num_flashcards: numFlashcards })
+  });
+
+  if (res.ok) {
+    const data = await res.json();
+    alert(`Generated and added ${data.generated_flashcards.length} flashcards!`);
+    document.getElementById('generateTextInput').value = '';
+
+    const flashcardsRes = await fetch(`/flashcards/packs/${currentPackId}/flashcards`);
+    const flashcards = await flashcardsRes.json();
+    renderFlashcards(flashcards);
+  } else {
+    const error = await res.json();
+    alert('Failed to generate flashcards: ' + (error.error || 'Unknown error'));
+  }
+};
+
+// Generate flashcards from topic
+document.getElementById('generateFromTopicBtn').onclick = async () => {
+  if (!currentPackId) {
+    alert('Please select a flashcard pack first.');
+    return;
+  }
+
+  const topic = document.getElementById('topicInput').value.trim();
+  if (!topic) {
+    alert('Please enter a topic to generate flashcards.');
+    return;
+  }
+
+  let numCards = parseInt(document.getElementById('numTopicFlashcardsInput').value, 10);
+  if (isNaN(numCards) || numCards < 1) numCards = 5;
+  if (numCards > 20) numCards = 20;
+
+  const res = await fetch(`/flashcards/packs/${currentPackId}/generate-from-topic`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ topic, num_flashcards: numCards })
+  });
+
+  if (res.ok) {
+    const data = await res.json();
+    alert(`Generated and added ${data.generated_flashcards.length} flashcards for topic "${topic}".`);
+    document.getElementById('topicInput').value = '';
+    document.getElementById('numTopicFlashcardsInput').value = 5;
+
+    const flashcardsRes = await fetch(`/flashcards/packs/${currentPackId}/flashcards`);
+    const flashcards = await flashcardsRes.json();
+    renderFlashcards(flashcards);
+  } else {
+    const error = await res.json();
+    alert('Failed to generate flashcards from topic: ' + (error.error || 'Unknown error'));
+  }
+};
+
+</script>
+
+{% endblock %}

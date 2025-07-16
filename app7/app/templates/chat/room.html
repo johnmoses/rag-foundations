@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Room {{ room.code }}{% endblock %}
+
+{% block extrahead %}
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+{% endblock %}
+
+
+{% block content %}
+<h2>Room: {{ room.code }}</h2>
+<form action="{{ url_for('chat.leave_chat_room', room_code=room.code) }}" method="POST" style="margin-bottom:1em;">
+    <button type="submit">Leave Room</button>
+</form>
+
+<h3>Participants</h3>
+<ul>
+    {% for p in participants %}
+    <li>{{ p.username }}</li>
+    {% endfor %}
+    {% if room.ai_enabled %}
+    <li><em>AI Bot</em></li>
+    {% endif %}
+</ul>
+
+<h3>Chat</h3>
+<div class="chat-container">
+    <ul id="messages"
+        style="list-style:none; padding:0; max-height: 400px; overflow-y: auto; border: 1px solid #ccc; margin-bottom: 1em;">
+        {% for msg in messages %}
+        {% if msg.user and msg.user.id == current_user.id %}
+        <li class="self">
+            <div><strong>{{ msg.user.username }}</strong> <span>{{ msg.timestamp.strftime('%H:%M') }}</span></div>
+            <div>{{ msg.content }}</div>
+        </li>
+        {% elif not msg.user %}
+        <li class="ai">
+            <div><strong>AI Bot</strong> <span>{{ msg.timestamp.strftime('%H:%M') }}</span></div>
+            <div><em>{{ msg.content }}</em></div>
+        </li>
+        {% else %}
+        <li class="other">
+            <div><strong>{{ msg.user.username }}</strong> <span>{{ msg.timestamp.strftime('%H:%M') }}</span></div>
+            <div>{{ msg.content }}</div>
+        </li>
+        {% endif %}
+        {% endfor %}
+    </ul>
+
+
+    <form id="chat-form" method="POST" action="{{ url_for('chat.send_message', room_code=room.code) }}">
+        <input id="message-input" name="message" autocomplete="off" placeholder="Type your message" required
+            style="width: 75%; padding: 8px;" />
+        <button type="submit" style="padding: 8px 12px;">Send</button>
+    </form>
+</div>
+{% endblock %}
+
+{% block extrajs %}
+<script src="{{ url_for('static', filename='js/room.js') }}"></script>
+<script>
+    const ROOM_CODE = "{{ room.code }}";
+</script>
+{% endblock %}

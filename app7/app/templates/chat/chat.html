@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Chat Rooms{% endblock %}
+
+{% block content %}
+<h2>Create or Join a Chat Room</h2>
+
+<form method="POST" style="margin-bottom: 1em;">
+  <input type="text" name="room_code" placeholder="Room name" required>
+  <label>
+    <input type="checkbox" name="ai_enabled"> Enable AI Bot
+  </label>
+  <button type="submit">Create / Join Room</button>
+</form>
+
+<h3>Existing Rooms</h3>
+<ul>
+  {% for room in rooms %}
+    <li>
+      {{ room.code }} {% if room.ai_enabled %}(AI enabled){% endif %}
+      - <a href="{{ url_for('chat.room', room_code=room.code) }}">Enter</a>
+    </li>
+  {% else %}
+    <li>No rooms yet</li>
+  {% endfor %}
+</ul>
+{% endblock %}

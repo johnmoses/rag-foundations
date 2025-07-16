@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}Flashcard Packs{% endblock %}
+{% block content %}
+<h2>Your Flashcard Packs</h2>
+<select id="packSelect">
+  <option value="">-- Select Pack --</option>
+</select>
+<button id="createPackBtn">Create New Pack</button>
+<button id="sharePackBtn" disabled>Share Selected Pack</button>
+<div id="shareLinkContainer"></div>
+
+<hr>
+
+<div id="flashcardsContainer"></div>
+
+<h3>Add New Flashcard</h3>
+<form id="addFlashcardForm">
+  <input id="flashcardQuestion" required placeholder="Question" style="width:45%" />
+  <input id="flashcardAnswer" required placeholder="Answer" style="width:45%" />
+  <button type="submit">Add Flashcard</button>
+</form>
+
+<script>
+async function fetchPacks() {
+  const res = await fetch('/flashcards/packs');
+  const packs = await res.json();
+  const sel = document.getElementById('packSelect');
+  sel.innerHTML = '<option value="">-- Select Pack --</option>';
+  packs.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = p.name;
+    sel.appendChild(opt);
+  });
+}
+async function fetchCards(packId) {
+  if (!packId) {
+    document.getElementById('flashcardsContainer').innerHTML = '';
+    document.getElementById('sharePackBtn').disabled = true;
+    document.getElementById('shareLinkContainer').innerHTML = '';
+    return;
+  }
+  document.getElementById('sharePackBtn').disabled = false;
+  const res = await fetch(`/flashcards/packs/${packId}/flashcards`);
+  const cards = await res.json();
+
+  const container = document.getElementById('flashcardsContainer');
+  if (cards.length === 0) {
+    container.innerHTML = '<p>No flashcards. Add some below!</p>';
+    return;
+  }
+  container.innerHTML = '';
+  cards.forEach(card => {
+    const div = document.createElement('div');
+    div.innerHTML = `
+      <input type="text" class="card-question" value="${card.question}" style="width:45%" />
+      <input type="text" class="card-answer" value="${card.answer}" style="width:45%" />
+      <button class="saveBtn" data-id="${card.id}">Save</button>
+      <button class="deleteBtn" data-id="${card.id}">Delete</button>
+      <hr>
+    `;
+    container.appendChild(div);
+  });
+  attachCardEvents();
+}
+
+function attachCardEvents() {
+  [...document.getElementsByClassName('saveBtn')].forEach(btn => {
+    btn.onclick = async () => {
+      const cardId = btn.dataset.id;
+      const inputs = btn.parentElement.querySelectorAll('input');
+      const question = inputs[0].value.trim();
+      const answer = inputs[1].value.trim();
+      if (!question || !answer) {
+        alert('Both question and answer are required.');
+        return;
+      }
+      const res = await fetch(`/flashcards/flashcards/${cardId}`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({question, answer})
+      });
+      if (res.ok) alert('Flashcard saved!');
+      else alert('Failed to save flashcard.');
+    };
+  });
+  [...document.getElementsByClassName('deleteBtn')].forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Delete this flashcard?')) return;
+      const cardId = btn.dataset.id;
+      const res = await fetch(`/flashcards/flashcards/${cardId}`, {method:'DELETE'});
+      if (res.ok) {
+        btn.parentElement.remove();
+      } else {
+        alert('Failed to delete flashcard.');
+      }
+    };
+  });
+}
+
+document.getElementById('packSelect').onchange = e => fetchCards(e.target.value);
+
+document.getElementById('createPackBtn').onclick = async () => {
+  const name = prompt('Enter new pack name:');
+  if (!name) return;
+  const res = await fetch('/flashcards/packs', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name})
+  });
+  if (res.ok) await fetchPacks();
+  else alert('Could not create pack');
+};
+
+document.getElementById('sharePackBtn').onclick = async () => {
+  const packId = document.getElementById('packSelect').value;
+  if (!packId) {
+    alert('Select a pack first');
+    return;
+  }
+  const res = await fetch(`/flashcards/packs/${packId}/share`, {method:'POST'});
+  if (res.ok) {
+    const data = await res.json();
+    document.getElementById('shareLinkContainer').innerHTML = `Share link: <a href="${data.share_url}" target="_blank">${data.share_url}</a>`;
+  } else {
+    alert('Failed to generate share link.');
+  }
+};
+
+document.getElementById('addFlashcardForm').onsubmit = async e => {
+  e.preventDefault();
+  const packId = document.getElementById('packSelect').value;
+  if (!packId) {
+    alert('Select a pack to add flashcard.');
+    return;
+  }
+  const q = document.getElementById('flashcardQuestion').value.trim();
+  const a = document.getElementById('flashcardAnswer').value.trim();
+  if (!q || !a) {
+    alert('Both question and answer are required.');
+    return;
+  }
+  const res = await fetch(`/flashcards/packs/${packId}/flashcards`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({question: q, answer: a})
+  });
+  if (res.ok) {
+    alert('Flashcard added.');
+    fetchCards(packId);
+    e.target.reset();
+  } else {
+    alert('Failed to add flashcard.');
+  }
+};
+
+fetchPacks();
+</script>
+{% endblock %}

@@ -1,0 +1,7 @@
+Flask
+Flask-SQLAlchemy
+Flask-Login
+Flask-SocketIO
+eventlet
+werkzeug
+llama-cpp-python  # or your LLaMA python binding

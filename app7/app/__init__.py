@@ -1,39 +1,35 @@
-from flask import Flask
-from flask_migrate import Migrate
-from .extensions import db, bcrypt, login_manager
-from .routes.main import main_bp
-from .routes.auth import auth_bp
-from .routes.quiz import quiz_bp
-from .routes.homework import homework_bp
-from .routes.summarizer import summarizer_bp
-from .routes.chat import chat_bp
-from .routes.admin import admin_bp
+from flask import Flask, render_template
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager
+from flask_socketio import SocketIO
+
+db = SQLAlchemy()
+login_manager = LoginManager()
+socketio = SocketIO()
 
 def create_app():
-    app = Flask(__name__)
-    app.config.from_object('app.config.Config')
+    app = Flask(
+        __name__,
+    )
+    app.config.from_object('config.Config')
 
     db.init_app(app)
-    bcrypt.init_app(app)
     login_manager.init_app(app)
-    migrate = Migrate(app, db)
+    socketio.init_app(app, cors_allowed_origins="*")
 
-    # Import models to register tables
-    from .models.user import User
-    from .models.quiz import Quiz, QuizAttempt, QuizAnswer
-    from .models.homework import Homework
-    from .models.summary import Summary
-
-    with app.app_context():
-        db.create_all()
+    # Import blueprints
+    from app.auth.routes import auth_bp
+    from app.flashcards.routes import flashcards_bp
+    from app.chat.routes import chat_bp
 
     # Register blueprints
-    app.register_blueprint(main_bp)
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(quiz_bp, url_prefix='/quiz')
-    app.register_blueprint(homework_bp, url_prefix='/homework')
-    app.register_blueprint(summarizer_bp, url_prefix='/summarize')
+    app.register_blueprint(auth_bp, url_prefix='/auth')
+    app.register_blueprint(flashcards_bp, url_prefix='/flashcards')
     app.register_blueprint(chat_bp, url_prefix='/chat')
-    app.register_blueprint(admin_bp, url_prefix='/admin')
+
+    # Custom 404 error handler
+    @app.errorhandler(404)
+    def page_not_found(e):
+        return render_template('404.html'), 404
 
     return app

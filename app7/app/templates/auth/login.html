@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Login{% endblock %}
+{% block content %}
+<h2>Login</h2>
+<form id="loginForm">
+    <input type="text" name="username_or_email" placeholder="Username or Email" required />
+    <input type="password" name="password" placeholder="Password" required />
+    <button type="submit">Login</button>
+</form>
+<script>
+    document.getElementById('loginForm').onsubmit = async e => {
+        e.preventDefault();
+        const form = e.target;
+        const data = {
+            username_or_email: form.username_or_email.value,
+            password: form.password.value
+        };
+        const res = await fetch('{{ url_for("auth.login") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const json = await res.json();
+        if (res.ok) {
+            // Redirect to dashboard or flashcards page returned from the server
+            window.location.href = json.redirect;
+        } else {
+            alert(json.error);
+        }
+    };
+</script>
+
+{% endblock %}
